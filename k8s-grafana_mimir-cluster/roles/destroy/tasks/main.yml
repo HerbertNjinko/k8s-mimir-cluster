@@ -1,0 +1,148 @@
+---
+# roles/destroy/tasks/main.yml
+# Idempotent cleanup role for Kubernetes control-plane and workers.
+# Safe to run repeatedly; tasks are best-effort and guarded with ignore_errors where appropriate.
+
+- name: Stop kubelet (ensure static pods won't respawn)
+  ansible.builtin.service:
+    name: kubelet
+    state: stopped
+    enabled: false
+  ignore_errors: true
+
+- name: Remove static pod manifests
+  ansible.builtin.file:
+    path: /etc/kubernetes/manifests
+    state: absent
+  ignore_errors: true
+
+- name: Remove leftover control plane containers (crictl) - best-effort
+  ansible.builtin.shell: |
+    set -e
+    if command -v crictl >/dev/null 2>&1; then
+      crictl ps -a | awk '/kube-apiserver|etcd|kube-controller|kube-scheduler/ {print $1}' | xargs -r crictl rm -f
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+
+- name: Remove leftover control plane containers (ctr) - fallback for containerd
+  ansible.builtin.shell: |
+    set -e
+    if command -v ctr >/dev/null 2>&1; then
+      ctr -n k8s.io containers list 2>/dev/null | awk '/kube-apiserver|etcd|kube-controller|kube-scheduler/ {print $1}' \
+        | xargs -r -I{} ctr -n k8s.io containers delete {} || true
+      ctr -n k8s.io tasks list 2>/dev/null | awk '/kube-apiserver|etcd|kube-controller|kube-scheduler/ {print $1}' \
+        | xargs -r -I{} ctr -n k8s.io tasks kill {} || true
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+
+- name: Restart containerd to clear sockets
+  ansible.builtin.service:
+    name: containerd
+    state: restarted
+  ignore_errors: true
+
+- name: Ensure kubelet is stopped after cleaning
+  ansible.builtin.service:
+    name: kubelet
+    state: stopped
+    enabled: false
+  ignore_errors: true
+
+- name: kubeadm reset (ignore errors if not initialized)
+  ansible.builtin.command: kubeadm reset -f
+  register: kubeadm_reset
+  changed_when: true
+  failed_when: false
+
+- name: Remove Kubernetes directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/kubernetes
+    - /var/lib/etcd
+    - /var/lib/kubelet
+    - /etc/cni
+    - /opt/cni
+    - /var/lib/cni
+    - /var/run/kubernetes
+    - /var/lib/containerd/io.containerd.grpc.v1.cri
+  ignore_errors: true
+
+- name: Flush iptables filter table (best-effort)
+  ansible.builtin.command: iptables -F
+  changed_when: false
+  failed_when: false
+
+- name: Flush iptables nat table (best-effort)
+  ansible.builtin.command: iptables -t nat -F
+  changed_when: false
+  failed_when: false
+
+- name: Delete common CNI interfaces (best-effort)
+  ansible.builtin.shell: |
+    for i in cni0 flannel.1 tunl0 cali0; do
+      ip link delete "$i" 2>/dev/null || true
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+
+- name: Remove Kubernetes packages (optional)
+  ansible.builtin.dnf:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: absent
+  when: remove_k8s_packages | default(true)
+  ignore_errors: true
+
+- name: Remove containerd packages (optional)
+  ansible.builtin.dnf:
+    name:
+      - containerd
+      - containerd.io
+    state: absent
+  when: remove_containerd_packages | default(false)
+  ignore_errors: true
+
+- name: Remove Kubernetes repo file (optional)
+  ansible.builtin.file:
+    path: /etc/yum.repos.d/kubernetes.repo
+    state: absent
+  when: remove_k8s_repo | default(true)
+  ignore_errors: true
+
+- name: Remove Docker repo file if present (optional)
+  ansible.builtin.file:
+    path: /etc/yum.repos.d/docker-ce.repo
+    state: absent
+  when: remove_docker_repo | default(false)
+  ignore_errors: true
+
+- name: Re-enable swap in /etc/fstab (optional)
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^#\s+(.*\sswap\s+.*)$'
+    replace: '\1'
+  when: restore_swap | default(false)
+  failed_when: false
+  ignore_errors: true
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Reboot nodes (optional)
+  ansible.builtin.reboot:
+    reboot_timeout: 900
+  when: reboot_after_destroy | default(false)
+

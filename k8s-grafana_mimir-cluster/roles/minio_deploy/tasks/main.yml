@@ -1,0 +1,298 @@
+---
+- name: Ensure MinIO namespace exists
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace {{ minio_namespace }}
+  register: minio_ns_create
+  failed_when: false
+  changed_when: "'created' in minio_ns_create.stdout"
+
+- name: Ensure local-path provisioner is running
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n local-path-storage
+    rollout status deployment/local-path-provisioner --timeout=5m
+  register: local_path_ready
+  changed_when: false
+  failed_when: local_path_ready.rc != 0
+
+- name: Show local-path provisioner pods
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n local-path-storage get pods -o wide
+  register: local_path_pods
+  changed_when: false
+
+- name: Print local-path provisioner pods
+  ansible.builtin.debug:
+    msg: "{{ local_path_pods.stdout_lines }}"
+
+- name: Create or update MinIO root credentials secret
+  ansible.builtin.shell: |
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }} \
+      create secret generic minio-root-user \
+      --from-literal=root-user='{{ minio_root_user }}' \
+      --from-literal=root-password='{{ minio_root_password }}' \
+      --dry-run=client -o yaml | \
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }} apply -f -
+  args:
+    executable: /bin/bash
+  no_log: true
+  register: minio_secret
+  changed_when: "'created' in minio_secret.stdout or 'configured' in minio_secret.stdout"
+
+- name: Add MinIO Helm repo
+  ansible.builtin.command: helm repo add minio https://charts.min.io/
+  failed_when: false
+  changed_when: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Update Helm repos
+  ansible.builtin.command: helm repo update
+  changed_when: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Render MinIO values file
+  ansible.builtin.template:
+    src: minio-values.yaml.j2
+    dest: /tmp/minio-values.yaml
+    mode: "0600"
+
+- name: Disable firewalld
+  ansible.builtin.service:
+    name: firewalld
+    state: stopped
+    enabled: false
+  ignore_errors: true
+
+- name: Deploy or upgrade MinIO
+  block:
+    - name: Helm upgrade install MinIO
+      ansible.builtin.command: >
+        helm upgrade --install {{ minio_release_name }} minio/minio
+        --namespace {{ minio_namespace }}
+        --create-namespace
+        --version {{ minio_chart_version }}
+        -f /tmp/minio-values.yaml
+        --wait
+        --timeout 15m
+      register: minio_helm
+      changed_when: minio_helm.rc == 0
+      failed_when: minio_helm.rc != 0
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+  rescue:
+    - name: Show MinIO pods
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }} get pods -o wide
+      register: minio_failed_pods
+      changed_when: false
+      failed_when: false
+
+    - name: Show MinIO PVCs
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }} get pvc
+      register: minio_failed_pvcs
+      changed_when: false
+      failed_when: false
+
+    - name: Show PVs
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf get pv
+      register: minio_failed_pvs
+      changed_when: false
+      failed_when: false
+
+    - name: Show StorageClasses
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf get storageclass
+      register: minio_failed_sc
+      changed_when: false
+      failed_when: false
+
+    - name: Show MinIO events
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }} get events --sort-by=.lastTimestamp
+      register: minio_failed_events
+      changed_when: false
+      failed_when: false
+
+    - name: Print MinIO pods
+      ansible.builtin.debug:
+        msg: "{{ minio_failed_pods.stdout_lines | default([]) }}"
+
+    - name: Print MinIO PVCs
+      ansible.builtin.debug:
+        msg: "{{ minio_failed_pvcs.stdout_lines | default([]) }}"
+
+    - name: Print PVs
+      ansible.builtin.debug:
+        msg: "{{ minio_failed_pvs.stdout_lines | default([]) }}"
+
+    - name: Print StorageClasses
+      ansible.builtin.debug:
+        msg: "{{ minio_failed_sc.stdout_lines | default([]) }}"
+
+    - name: Print MinIO events
+      ansible.builtin.debug:
+        msg: "{{ minio_failed_events.stdout_lines | default([]) }}"
+
+    - name: Fail after diagnostics
+      ansible.builtin.fail:
+        msg: "MinIO Helm deployment failed. PVC binding or StorageClass provisioning is the likely issue."
+
+- name: Wait for MinIO deployment rollout
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }}
+    rollout status deployment/{{ minio_release_name }} --timeout=10m
+  register: minio_rollout
+  changed_when: false
+
+- name: Delete old mc-bootstrap pod if present
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }}
+    delete pod mc-bootstrap --ignore-not-found=true
+  changed_when: false
+  failed_when: false
+
+- name: Create Mimir buckets manifest
+  ansible.builtin.copy:
+    dest: /tmp/mc-bootstrap.yaml
+    mode: "0600"
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: mc-bootstrap
+        namespace: {{ minio_namespace }}
+      spec:
+        restartPolicy: Never
+        containers:
+          - name: mc
+            image: minio/mc:latest
+            env:
+              - name: MINIO_ROOT_USER
+                valueFrom:
+                  secretKeyRef:
+                    name: minio-root-user
+                    key: root-user
+              - name: MINIO_ROOT_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: minio-root-user
+                    key: root-password
+            command: ["/bin/sh", "-c"]
+            args:
+              - >
+                mc alias set local
+                "http://{{ minio_release_name }}.{{ minio_namespace }}.svc.cluster.local:{{ minio_service_port }}"
+                "$MINIO_ROOT_USER"
+                "$MINIO_ROOT_PASSWORD" &&
+                mc mb --ignore-existing local/{{ mimir_s3_bucket_blocks }} &&
+                mc mb --ignore-existing local/{{ mimir_s3_bucket_alertmanager }} &&
+                mc mb --ignore-existing local/{{ mimir_s3_bucket_ruler }}
+  no_log: true
+
+- name: Apply Mimir bucket bootstrap pod
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f /tmp/mc-bootstrap.yaml
+  register: mc_bootstrap_start
+  changed_when: "'created' in mc_bootstrap_start.stdout or 'configured' in mc_bootstrap_start.stdout"
+  no_log: true
+
+- name: Wait for mc-bootstrap pod to complete
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }}
+    wait --for=jsonpath='{.status.phase}'=Succeeded pod/mc-bootstrap --timeout=3m
+  register: mc_bootstrap_done
+  changed_when: false
+
+- name: Show mc-bootstrap logs
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }}
+    logs mc-bootstrap
+  register: mc_bootstrap_logs
+  changed_when: false
+  failed_when: false
+
+- name: Delete old mc-verify pod if present
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }}
+    delete pod mc-verify --ignore-not-found=true
+  changed_when: false
+  failed_when: false
+
+- name: Create Mimir bucket verification manifest
+  ansible.builtin.copy:
+    dest: /tmp/mc-verify.yaml
+    mode: "0600"
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: mc-verify
+        namespace: {{ minio_namespace }}
+      spec:
+        restartPolicy: Never
+        containers:
+          - name: mc
+            image: minio/mc:latest
+            env:
+              - name: MINIO_ROOT_USER
+                valueFrom:
+                  secretKeyRef:
+                    name: minio-root-user
+                    key: root-user
+              - name: MINIO_ROOT_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: minio-root-user
+                    key: root-password
+            command: ["/bin/sh", "-c"]
+            args:
+              - >
+                mc alias set local
+                "http://{{ minio_release_name }}.{{ minio_namespace }}.svc.cluster.local:{{ minio_service_port }}"
+                "$MINIO_ROOT_USER"
+                "$MINIO_ROOT_PASSWORD" &&
+                mc ls local &&
+                mc ls local/{{ mimir_s3_bucket_blocks }} &&
+                mc ls local/{{ mimir_s3_bucket_alertmanager }} &&
+                mc ls local/{{ mimir_s3_bucket_ruler }}
+  no_log: true
+
+- name: Apply Mimir bucket verification pod
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f /tmp/mc-verify.yaml
+  register: mc_verify_start
+  changed_when: "'created' in mc_verify_start.stdout or 'configured' in mc_verify_start.stdout"
+  no_log: true
+
+- name: Wait for mc-verify pod to complete
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }}
+    wait --for=jsonpath='{.status.phase}'=Succeeded pod/mc-verify --timeout=3m
+  register: mc_verify_done
+  changed_when: false
+
+- name: Show mc-verify logs
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }}
+    logs mc-verify
+  register: mc_verify
+  changed_when: false
+  failed_when: false
+
+- name: Cleanup mc-bootstrap pod
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }}
+    delete pod mc-bootstrap --ignore-not-found=true
+  changed_when: false
+  failed_when: false
+
+- name: Cleanup mc-verify pod
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ minio_namespace }}
+    delete pod mc-verify --ignore-not-found=true
+  changed_when: false
+  failed_when: false

@@ -1,0 +1,61 @@
+---
+- name: Reset Kubernetes cluster
+  hosts: k8s
+  become: true
+  tasks:
+
+    - name: Run kubeadm reset (ignore errors if not initialized)
+      command: kubeadm reset -f
+      ignore_errors: true
+
+    - name: Stop kubelet
+      service:
+        name: kubelet
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+    - name: Stop containerd
+      service:
+        name: containerd
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+    - name: Remove Kubernetes directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kubernetes
+        - /var/lib/etcd
+        - /var/lib/kubelet
+        - /etc/cni
+        - /opt/cni
+        - /var/lib/cni
+
+    - name: Remove Kubernetes packages
+      dnf:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: absent
+      ignore_errors: true
+
+    - name: Remove containerd package
+      dnf:
+        name:
+          - containerd
+          - containerd.io
+        state: absent
+      ignore_errors: true
+
+    - name: Remove Kubernetes repo
+      file:
+        path: /etc/yum.repos.d/kubernetes.repo
+        state: absent
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: true

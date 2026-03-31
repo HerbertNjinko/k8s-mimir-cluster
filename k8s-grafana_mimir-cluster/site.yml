@@ -1,0 +1,21 @@
+---
+- name: Common OS prep on all nodes
+  hosts: k8s
+  become: true
+  roles:
+    - { role: common, tags: ["common"] }
+    - { role: containerd, tags: ["containerd"] }
+    - { role: kubernetes, tags: ["kubernetes"] }
+
+- name: Initialize control plane
+  hosts: controlplane
+  become: true
+  roles:
+    - { role: controlplane, tags: ["controlplane"] }
+    - { role: cni_calico, tags: ["cni"] }
+
+- name: Join worker nodes
+  hosts: workers
+  become: true
+  roles:
+    - { role: workers, tags: ["workers"] }

@@ -1,0 +1,112 @@
+---
+- name: Install repo tools
+  ansible.builtin.dnf:
+    name:
+      - dnf-plugins-core
+      - curl
+    state: present
+
+# --- Enable CRB (needed for many EPEL deps on EL9) ---
+- name: Enable CRB repo (Rocky 9)
+  ansible.builtin.command: dnf config-manager --set-enabled crb
+  register: crb_enable
+  changed_when: "'enabled' in (crb_enable.stdout | lower) or crb_enable.rc == 0"
+  failed_when: false
+
+# --- Enable EPEL ---
+- name: Install EPEL release
+  ansible.builtin.dnf:
+    name: epel-release
+    state: present
+
+- name: Refresh DNF metadata
+  ansible.builtin.command: dnf -y makecache
+  changed_when: false
+
+# --- Try install containerd from OS/EPEL first ---
+- name: Try install containerd from Rocky/EPEL repos
+  ansible.builtin.dnf:
+    name: containerd
+    state: present
+  register: containerd_epel
+  failed_when: false
+
+# --- If not found, fall back to Docker repo containerd.io ---
+- name: Add Docker CE repo (fallback)
+  ansible.builtin.command: >
+    dnf config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo
+  args:
+    creates: /etc/yum.repos.d/docker-ce.repo
+  when: containerd_epel is failed or (containerd_epel.results is defined and ('No package' in (containerd_epel.msg | default(''))))
+  changed_when: false
+  failed_when: false
+
+- name: Refresh DNF metadata after adding Docker repo (fallback)
+  ansible.builtin.command: dnf -y makecache
+  when: containerd_epel is failed
+  changed_when: false
+  failed_when: false
+
+- name: Try install containerd.io from Docker repo (fallback)
+  ansible.builtin.dnf:
+    name: containerd.io
+    state: present
+  when: containerd_epel is failed
+  register: containerd_docker
+  failed_when: false
+
+# --- Hard fail if neither method worked ---
+- name: Fail if containerd could not be installed
+  ansible.builtin.fail:
+    msg: |
+      containerd install failed from both EPEL (containerd) and Docker repo (containerd.io).
+      Troubleshooting:
+        - Check outbound access to repo mirrors (EPEL/Docker)
+        - Check proxy settings if required
+        - Check repo enablement: dnf repolist
+        - Try: dnf list containerd containerd.io
+  when: >
+    (containerd_epel is failed) and
+    (containerd_docker is not defined or containerd_docker is failed)
+
+# --- Configure + start containerd ---
+- name: Enable and start containerd
+  ansible.builtin.service:
+    name: containerd
+    state: started
+    enabled: true
+  when: not ansible_check_mode
+
+- name: Ensure /etc/containerd exists
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: Generate default containerd config
+  ansible.builtin.command: containerd config default
+  register: containerd_default_config
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Write containerd config.toml
+  ansible.builtin.copy:
+    dest: /etc/containerd/config.toml
+    content: "{{ containerd_default_config.stdout }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart containerd
+  when: not ansible_check_mode
+
+- name: Set SystemdCgroup=true
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+  notify: Restart containerd
+  when: not ansible_check_mode
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+  when: not ansible_check_mode

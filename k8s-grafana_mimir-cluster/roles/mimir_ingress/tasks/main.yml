@@ -1,0 +1,22 @@
+---
+- name: Render Mimir ingress manifest
+  ansible.builtin.template:
+    src: mimir-ingress.yaml.j2
+    dest: /tmp/mimir-ingress.yaml
+    mode: "0644"
+
+- name: Apply Mimir ingress
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f /tmp/mimir-ingress.yaml
+  register: mimir_ingress_apply
+  changed_when: "'created' in mimir_ingress_apply.stdout or 'configured' in mimir_ingress_apply.stdout"
+
+- name: Show Mimir ingress
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ mimir_namespace }} get ingress
+  register: mimir_ingress_out
+  changed_when: false
+
+- name: Print Mimir ingress
+  ansible.builtin.debug:
+    msg: "{{ mimir_ingress_out.stdout_lines }}"

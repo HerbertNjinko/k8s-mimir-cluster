@@ -1,0 +1,16 @@
+---
+- name: Redeploy Mimir after secret change
+  ansible.builtin.command: >
+    helm upgrade --install {{ mimir_release_name }} grafana/mimir-distributed
+    --namespace {{ mimir_namespace }}
+    --create-namespace
+    --version {{ mimir_chart_version }}
+    -f /tmp/mimir-values-{{ mimir_release_name }}.yaml
+    --set-string global.podAnnotations.mimirS3SecretVersion={{ mimir_bucket_secret_version | string }}
+    --wait
+    --timeout 30m
+  register: mimir_secret_redeploy
+  changed_when: mimir_secret_redeploy.rc == 0
+  failed_when: mimir_secret_redeploy.rc != 0
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf

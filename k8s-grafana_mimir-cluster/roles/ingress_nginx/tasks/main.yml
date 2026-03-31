@@ -1,0 +1,62 @@
+---
+- name: Ensure ingress-nginx namespace exists
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace {{ ingress_nginx_namespace }}
+  register: ingress_ns_create
+  failed_when: false
+  changed_when: "'created' in ingress_ns_create.stdout"
+
+- name: Add ingress-nginx Helm repo
+  ansible.builtin.command: helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+  register: ingress_repo_add
+  failed_when: false
+  changed_when: "'has been added' in ingress_repo_add.stdout or 'has been added' in ingress_repo_add.stderr"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Update Helm repos
+  ansible.builtin.command: helm repo update
+  changed_when: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Render ingress-nginx values
+  ansible.builtin.template:
+    src: ingress-nginx-values.yaml.j2
+    dest: /tmp/ingress-nginx-values.yaml
+    mode: "0644"
+
+- name: Deploy ingress-nginx
+  ansible.builtin.command: >
+    helm upgrade --install {{ ingress_nginx_release_name }} ingress-nginx/ingress-nginx
+    --namespace {{ ingress_nginx_namespace }}
+    --create-namespace
+    --version {{ ingress_nginx_chart_version }}
+    -f /tmp/ingress-nginx-values.yaml
+    --wait
+    --timeout 15m
+  register: ingress_helm
+  changed_when: ingress_helm.rc == 0
+  failed_when: ingress_helm.rc != 0
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Show ingress-nginx pods
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ ingress_nginx_namespace }} get pods -o wide
+  register: ingress_pods
+  changed_when: false
+
+- name: Show ingress-nginx service
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ ingress_nginx_namespace }} get svc
+  register: ingress_svc
+  changed_when: false
+
+- name: Print ingress-nginx pods
+  ansible.builtin.debug:
+    msg: "{{ ingress_pods.stdout_lines }}"
+
+- name: Print ingress-nginx services
+  ansible.builtin.debug:
+    msg: "{{ ingress_svc.stdout_lines }}"

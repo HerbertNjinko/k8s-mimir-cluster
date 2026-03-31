@@ -1,0 +1,2 @@
+roles/preflight/tasks/main.yml
+roles/preflight/defaults/main.yml

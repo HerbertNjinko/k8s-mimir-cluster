@@ -1,0 +1,114 @@
+---
+- name: Ensure Mimir namespace exists
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf create namespace {{ mimir_namespace }}
+  register: mimir_ns_create
+  failed_when: false
+  changed_when: "'created' in mimir_ns_create.stdout"
+
+- name: Create or update Mimir object storage credentials secret
+  ansible.builtin.shell: |
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ mimir_namespace }} \
+      create secret generic {{ mimir_s3_secret_name }} \
+      --from-literal=AWS_ACCESS_KEY_ID='{{ seaweedfs_s3_access_key }}' \
+      --from-literal=AWS_SECRET_ACCESS_KEY='{{ seaweedfs_s3_secret_key }}' \
+      --dry-run=client -o yaml | \
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ mimir_namespace }} apply -f -
+  args:
+    executable: /bin/bash
+  register: create_secret
+  changed_when: "'created' in create_secret.stdout or 'configured' in create_secret.stdout"
+  failed_when: create_secret.rc != 0
+  notify: Redeploy Mimir after secret change
+  no_log: true
+
+- name: Add Grafana Helm repo
+  ansible.builtin.command: helm repo add grafana https://grafana.github.io/helm-charts
+  register: helm_repo_add
+  failed_when: false
+  changed_when: "'has been added' in helm_repo_add.stdout or 'has been added' in helm_repo_add.stderr"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Update Helm repos
+  ansible.builtin.command: helm repo update
+  changed_when: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Render Mimir values file
+  ansible.builtin.template:
+    src: mimir-values.yaml.j2
+    dest: /tmp/mimir-values-{{ mimir_release_name }}.yaml
+    mode: "0600"
+
+- name: Deploy or upgrade Grafana Mimir
+  block:
+    - name: Helm upgrade install mimir
+      ansible.builtin.command: >
+        helm upgrade --install {{ mimir_release_name }} grafana/mimir-distributed
+        --namespace {{ mimir_namespace }}
+        --create-namespace
+        --version {{ mimir_chart_version }}
+        -f /tmp/mimir-values-{{ mimir_release_name }}.yaml
+        --wait
+        --timeout 30m
+      register: mimir_helm
+      changed_when: "'STATUS: deployed' in mimir_helm.stdout or mimir_helm.rc == 0"
+      failed_when: mimir_helm.rc != 0
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+  rescue:
+    - name: Show Mimir pods
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ mimir_namespace }} get pods -o wide
+      register: mimir_failed_pods
+      changed_when: false
+      failed_when: false
+
+    - name: Show Mimir PVCs
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ mimir_namespace }} get pvc
+      register: mimir_failed_pvcs
+      changed_when: false
+      failed_when: false
+
+    - name: Show Mimir events
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ mimir_namespace }} get events --sort-by=.lastTimestamp
+      register: mimir_failed_events
+      changed_when: false
+      failed_when: false
+
+    - name: Print Mimir pods
+      ansible.builtin.debug:
+        msg: "{{ mimir_failed_pods.stdout_lines | default([]) }}"
+
+    - name: Print Mimir PVCs
+      ansible.builtin.debug:
+        msg: "{{ mimir_failed_pvcs.stdout_lines | default([]) }}"
+
+    - name: Print Mimir events
+      ansible.builtin.debug:
+        msg: "{{ mimir_failed_events.stdout_lines | default([]) }}"
+
+    - name: Fail after diagnostics
+      ansible.builtin.fail:
+        msg: "Grafana Mimir Helm deployment failed. See diagnostics above."
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Get Mimir pods
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n {{ mimir_namespace }} get pods -o wide
+  register: mimir_pods
+  retries: 30
+  delay: 20
+  until: mimir_pods.rc == 0
+  changed_when: false
+
+- name: Show Mimir pods
+  ansible.builtin.debug:
+    msg: "{{ mimir_pods.stdout_lines }}"

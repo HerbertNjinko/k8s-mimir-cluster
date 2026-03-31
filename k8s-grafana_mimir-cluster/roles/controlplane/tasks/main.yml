@@ -1,0 +1,73 @@
+---
+- name: Check if cluster already initialized
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: k8s_admin_conf
+
+- name: Check if kubeadm exists
+  ansible.builtin.command: kubeadm version -o short
+  register: kubeadm_version
+  changed_when: false
+  failed_when: false
+
+- name: Pre-pull kubeadm images (optional)
+  ansible.builtin.command: kubeadm config images pull
+  when: kubeadm_version.rc == 0
+  changed_when: false
+
+- name: Stop kubelet before init (avoid static pod respawn)
+  ansible.builtin.service:
+    name: kubelet
+    state: stopped
+  ignore_errors: true
+
+- name: Remove stale static pod manifests before init
+  ansible.builtin.file:
+    path: /etc/kubernetes/manifests
+    state: absent
+  ignore_errors: true
+
+- name: Ensure API port 6443 is free before kubeadm init
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 6443
+    state: stopped
+    timeout: 60
+
+- name: Initialize Kubernetes control-plane (kubeadm init)
+  ansible.builtin.command: >
+    kubeadm init
+    --apiserver-advertise-address={{ apiserver_advertise_address }}
+    --pod-network-cidr={{ pod_network_cidr }}
+  when: not k8s_admin_conf.stat.exists
+  register: kubeadm_init_out
+  changed_when: true
+
+- name: Ensure kubeconfig directory exists for admin user
+  ansible.builtin.file:
+    path: "/home/{{ (kubectl_admin_user | length > 0) | ternary(kubectl_admin_user, ansible_user) }}/.kube"
+    state: directory
+    owner: "{{ (kubectl_admin_user | length > 0) | ternary(kubectl_admin_user, ansible_user) }}"
+    group: "{{ (kubectl_admin_user | length > 0) | ternary(kubectl_admin_user, ansible_user) }}"
+    mode: "0700"
+  when: k8s_admin_conf.stat.exists or (kubeadm_init_out is defined)
+
+- name: Copy admin.conf to user's kube config
+  ansible.builtin.copy:
+    remote_src: true
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ (kubectl_admin_user | length > 0) | ternary(kubectl_admin_user, ansible_user) }}/.kube/config"
+    owner: "{{ (kubectl_admin_user | length > 0) | ternary(kubectl_admin_user, ansible_user) }}"
+    group: "{{ (kubectl_admin_user | length > 0) | ternary(kubectl_admin_user, ansible_user) }}"
+    mode: "0600"
+
+# This produces a reusable join command after init (or anytime later)
+- name: Create join command (control-plane)
+  ansible.builtin.command: kubeadm token create --print-join-command
+  register: join_cmd
+  changed_when: false
+
+- name: Set join command fact for other hosts
+  ansible.builtin.set_fact:
+    kubeadm_join_command: "{{ join_cmd.stdout }}"
+  changed_when: false

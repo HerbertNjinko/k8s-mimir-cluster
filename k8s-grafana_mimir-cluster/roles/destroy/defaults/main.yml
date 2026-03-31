@@ -1,0 +1,7 @@
+---
+remove_k8s_packages: false
+remove_containerd_packages: false
+remove_k8s_repo: true
+remove_docker_repo: false
+restore_swap: false
+reboot_after_destroy: false

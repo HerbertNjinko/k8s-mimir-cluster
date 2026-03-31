@@ -1,0 +1,99 @@
+---
+- name: Wait for apiserver to be reachable using admin kubeconfig
+  ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get --raw=/readyz
+  register: readyz
+  retries: 60
+  delay: 5
+  until: readyz.rc == 0
+  changed_when: false
+
+- name: Download Tigera operator manifest (validate_certs disabled)
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/tigera-operator.yaml"
+    dest: /tmp/tigera-operator.yaml
+    mode: "0644"
+    validate_certs: false
+
+- name: Apply Tigera operator manifest
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f /tmp/tigera-operator.yaml
+  register: tigera_apply
+  changed_when: "'configured' in tigera_apply.stdout or 'created' in tigera_apply.stdout"
+  failed_when: tigera_apply.rc != 0
+
+- name: "Wait for Tigera operator CRDs to be established"
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    wait --for=condition=Established crd/installations.operator.tigera.io
+    --timeout=5m
+  register: tigera_crd_wait
+  retries: 30
+  delay: 10
+  until: tigera_crd_wait.rc == 0
+  changed_when: false
+
+- name: "Wait for Tigera operator to be Available"
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    -n tigera-operator rollout status deploy/tigera-operator --timeout=10m
+  register: tigera_rollout
+  changed_when: false
+  failed_when: tigera_rollout.rc != 0
+
+- name: Download Calico custom resources manifest (validate_certs disabled)
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/custom-resources.yaml"
+    dest: /tmp/custom-resources.yaml
+    mode: "0644"
+    validate_certs: false
+
+- name: Ensure Calico pod CIDR matches pod_network_cidr
+  ansible.builtin.replace:
+    path: /tmp/custom-resources.yaml
+    regexp: 'cidr:\s*192\.168\.0\.0/16'
+    replace: "cidr: {{ pod_network_cidr }}"
+
+- name: Apply Calico custom resources
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f /tmp/custom-resources.yaml
+  register: calico_apply
+  changed_when: "'configured' in calico_apply.stdout or 'created' in calico_apply.stdout"
+  failed_when: calico_apply.rc != 0
+
+- name: Wait for calico-system namespace to exist
+  ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get ns calico-system
+  register: calico_ns
+  retries: 60
+  delay: 5
+  until: calico_ns.rc == 0
+  changed_when: false
+
+- name: "Wait for Calico daemonset calico-node to be ready"
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    -n calico-system rollout status ds/calico-node --timeout=10m
+  register: calico_node_rollout
+  changed_when: false
+  failed_when: calico_node_rollout.rc != 0
+
+- name: "Wait for Calico deployments to be ready (best-effort)"
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    -n calico-system rollout status deploy/{{ item }} --timeout=10m
+  loop:
+    - calico-kube-controllers
+    - calico-typha
+    - calico-apiserver
+  register: calico_deploy_rollout
+  changed_when: false
+  failed_when: false
+
+- name: "Final check: calico-system pods Ready (retry on NotFound races)"
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    wait --for=condition=Ready pods --all -n calico-system --timeout=2m
+  register: calico_wait_all
+  retries: 10
+  delay: 10
+  until: calico_wait_all.rc == 0
+  changed_when: false

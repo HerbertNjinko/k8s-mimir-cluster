@@ -1,0 +1,22 @@
+mode: standalone
+
+rootUser: {{ minio_root_user | quote }}
+rootPassword: {{ minio_root_password | quote }}
+
+persistence:
+  enabled: true
+  size: {{ minio_persistence_size | quote }}
+  storageClass: {{ mimir_storage_class_name | quote }}
+
+resources:
+  requests:
+    memory: 16Gi
+    cpu: 500m
+
+service:
+  type: ClusterIP
+  port: {{ minio_service_port }}
+
+consoleService:
+  type: ClusterIP
+  port: {{ minio_console_port }}

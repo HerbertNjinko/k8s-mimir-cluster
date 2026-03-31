@@ -1,0 +1,86 @@
+# Kubernetes version stream repo (stable v1.35)
+k8s_repo_version: "v1.35"
+calico_version: "v3.31.4"
+# Pod network CIDR to match Calico
+pod_network_cidr: "192.168.0.0/16"
+
+# API advertise address (your control-plane node IP)
+apiserver_advertise_address: "172.16.9.105"
+
+# /etc/hosts entries (simple on-prem name resolution)
+hosts_entries:
+  - { ip: "172.16.9.105", names: ["USP10LPGRAFKUB1", "mimir-control"] }
+  - { ip: "172.16.9.102", names: ["USP10LPGRAFMIM1", "mimir-worker1"] }
+  - { ip: "172.16.9.103", names: ["USP10LPGRAFMIM2", "mimir-worker2"] }
+  - { ip: "172.16.9.104", names: ["USP10LPGRAFMIM3", "mimir-worker3"] }
+
+# Optional: set this if you want kubectl config copied to a specific user on the control node
+# If empty, it uses the SSH user you connect as (ansible_user).
+kubectl_admin_user: ""
+
+# Calico / cluster sizing already defined elsewhere
+# pod_network_cidr: "192.168.0.0/16"
+
+# StorageClass
+mimir_storage_class_name: "local-path"
+
+# MinIO deployment
+minio_namespace: "minio"
+minio_release_name: "minio"
+minio_chart_version: "5.4.0"
+
+minio_root_user: "{{ vault_minio_root_user }}"
+minio_root_password: "{{ vault_minio_root_password }}"
+
+minio_persistence_size: "250Gi"
+minio_service_port: 9000
+minio_console_port: 9001
+
+# Internal MinIO endpoint for Mimir
+mimir_s3_secret_name: "mimir-s3-credentials"
+mimir_s3_endpoint: "minio.minio.svc.cluster.local:9000"
+mimir_s3_region: "us-east-1"
+mimir_s3_insecure: true
+mimir_s3_force_path_style: true
+
+mimir_s3_bucket_blocks: "mimir-blocks"
+mimir_s3_bucket_alertmanager: "mimir-alertmanager"
+mimir_s3_bucket_ruler: "mimir-ruler"
+
+# Mimir chart
+mimir_namespace: "mimir"
+mimir_release_name: "mimir-prod"
+mimir_chart_version: "6.0.3"
+mimir_bucket_secret_version: "0"
+
+ingress_nginx_namespace: "ingress-nginx"
+ingress_nginx_release_name: "ingress-nginx"
+ingress_nginx_chart_version: "4.14.0"
+
+ingress_nginx_class_name: "nginx"
+
+ingress_nginx_http_nodeport: 30080
+ingress_nginx_https_nodeport: 30443
+
+mimir_ingress_enabled: true
+mimir_ingress_name: "mimir-gateway"
+mimir_gateway_service_name: "mimir-prod-gateway"
+mimir_gateway_service_port: 80
+
+# leave empty for a hostless ingress first
+mimir_ingress_host: ""
+
+# Deployment model
+mimir_classic_architecture: true
+
+# Small production-ish footprint for a 4-node cluster
+mimir_alertmanager_replicas: 2
+mimir_compactor_replicas: 1
+mimir_distributor_replicas: 2
+mimir_ingester_replicas: 2
+mimir_querier_replicas: 2
+mimir_query_frontend_replicas: 2
+mimir_query_scheduler_replicas: 2
+mimir_ruler_replicas: 1
+mimir_store_gateway_replicas: 2
+mimir_gateway_replicas: 2
