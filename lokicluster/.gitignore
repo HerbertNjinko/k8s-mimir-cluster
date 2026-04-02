@@ -1,0 +1,6 @@
+# Ignore the .history directory, which is used by some code editors to store file history and backups.
+.history/
+
+
+
+
