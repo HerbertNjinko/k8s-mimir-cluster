@@ -1,0 +1,139 @@
+minio:
+  enabled: false
+
+kafka:
+  enabled: false
+
+global:
+  extraEnvFrom:
+    - secretRef:
+        name: {{ mimir_s3_secret_name }}
+  podAnnotations:
+    mimirS3SecretVersion: "{{ mimir_bucket_secret_version }}"
+
+mimir:
+  structuredConfig:
+    ingester:
+      push_grpc_method_enabled: true
+
+    ingest_storage:
+      enabled: false
+
+    common:
+      storage:
+        backend: s3
+        s3:
+          endpoint: {{ mimir_s3_endpoint | quote }}
+          region: {{ mimir_s3_region | quote }}
+          access_key_id: ${AWS_ACCESS_KEY_ID}
+          secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+          insecure: {{ mimir_s3_insecure | bool | lower }}
+          bucket_lookup_type: path
+
+    blocks_storage:
+      backend: s3
+      s3:
+        bucket_name: {{ mimir_s3_bucket_blocks | quote }}
+        endpoint: {{ mimir_s3_endpoint | quote }}
+        region: {{ mimir_s3_region | quote }}
+        access_key_id: ${AWS_ACCESS_KEY_ID}
+        secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+        insecure: {{ mimir_s3_insecure | bool | lower }}
+        bucket_lookup_type: path
+
+    alertmanager_storage:
+      backend: s3
+      s3:
+        bucket_name: {{ mimir_s3_bucket_alertmanager | quote }}
+        endpoint: {{ mimir_s3_endpoint | quote }}
+        region: {{ mimir_s3_region | quote }}
+        access_key_id: ${AWS_ACCESS_KEY_ID}
+        secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+        insecure: {{ mimir_s3_insecure | bool | lower }}
+        bucket_lookup_type: path
+
+    ruler_storage:
+      backend: s3
+      s3:
+        bucket_name: {{ mimir_s3_bucket_ruler | quote }}
+        endpoint: {{ mimir_s3_endpoint | quote }}
+        region: {{ mimir_s3_region | quote }}
+        access_key_id: ${AWS_ACCESS_KEY_ID}
+        secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+        insecure: {{ mimir_s3_insecure | bool | lower }}
+        bucket_lookup_type: path
+
+alertmanager:
+  replicaCount: 1
+  persistentVolume:
+    storageClass: {{ mimir_storage_class_name | quote }}
+
+compactor:
+  replicaCount: 1
+  limits:
+  # Delete from storage metrics data older than 1 year.
+    compactor_blocks_retention_enabled: true
+    compactor_blocks_retention_period: 1y
+  overrides:
+  tenant1:
+    # Delete from storage tenant1's metrics data older than 1 year.
+    compactor_blocks_retention_period: 1y
+  tenant2:
+    # Delete from storage tenant2's metrics data older than 2 years.
+    compactor_blocks_retention_period: 2y
+  tenant3:
+    # Disable retention for tenant3's metrics (never delete its data).
+    compactor_blocks_retention_period: 0
+
+distributor:
+  replicaCount: 1
+  distributor_limits:
+    max_ingestion_rate: 75000
+    max_inflight_push_requests: 1500
+    max_inflight_push_requests_bytes: 314572800
+
+ingester:
+  replicaCount: 2
+  ingerster_limits:
+    max-ingestion-rate: 20000
+    max_series: 150000
+    max_tenants: 1000
+    max_inflight_pushes_requests: 30000
+
+
+querier:
+  replicaCount: 1
+
+query_frontend:
+  replicaCount: 1
+
+query_scheduler:
+  replicaCount: 1
+
+ruler:
+  replicaCount: 1
+
+store_gateway:
+  replicaCount: 1
+
+gateway:
+  enabledNonEnterprise: true
+  replicaCount: 1
+
+admin-cache:
+  enabled: true
+
+chunks-cache:
+  enabled: true
+
+index-cache:
+  enabled: true
+
+metadata-cache:
+  enabled: true
+
+results-cache:
+  enabled: true
+
+rollout_operator:
+  enabled: false

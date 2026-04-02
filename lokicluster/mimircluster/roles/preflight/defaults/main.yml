@@ -1,0 +1,31 @@
+---
+# Endpoints to test (HTTPS HEAD/GET)
+repo_urls:
+  - "https://pkgs.k8s.io/"
+  - "https://pkgs.k8s.io/core:/stable:/{{ k8s_repo_version }}/rpm/"
+  - "https://dl.fedoraproject.org/pub/epel/"
+  - "https://download.docker.com/linux/centos/docker-ce.repo"
+
+# Control-plane host (inventory name) for port checks
+controlplane_host: "{{ groups['controlplane'][0] }}"
+
+# Ports to validate (from each node to control-plane)
+controlplane_ports:
+  - { name: "kube-apiserver", port: 6443 }
+  - { name: "etcd",          port: 2379 }
+  - { name: "etcd-peer",     port: 2380 }
+  - { name: "kubelet",       port: 10250 }
+  - { name: "controller",    port: 10257 }
+  - { name: "scheduler",     port: 10259 }
+
+# Ports to validate node-to-node (kubelet is the main one)
+node_ports:
+  - { name: "kubelet", port: 10250 }
+
+# DNS/hostnames to test resolution/ping
+# We'll test both inventory hostnames and the server hostnames you provided via hosts_entries
+dns_test_names: []
+
+# If you have an explicit proxy you expect, set these (optional)
+# expected_proxy: "http://proxy.mycorp.local:8080"
+expected_proxy: ""

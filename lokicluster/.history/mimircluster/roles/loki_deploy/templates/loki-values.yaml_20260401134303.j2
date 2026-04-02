@@ -1,0 +1,125 @@
+deploymentMode: SimpleScalable
+
+loki:
+  auth_enabled: false
+
+  commonConfig:
+    replication_factor: 1
+
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: s3
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+
+  storage_config:
+    aws:
+      endpoint: {{ loki_s3_endpoint | quote }}
+      bucketnames: {{ loki_bucket_chunks | quote }}
+      access_key_id: ${AWS_ACCESS_KEY_ID}
+      secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+      s3forcepathstyle: {{ loki_s3_force_path_style | bool | lower }}
+      insecure: {{ loki_s3_insecure | bool | lower }}
+
+  ruler:
+    enable_api: true
+    storage:
+      type: s3
+      s3:
+        endpoint: {{ loki_s3_endpoint | quote }}
+        bucketnames: {{ loki_bucket_ruler | quote }}
+        access_key_id: ${AWS_ACCESS_KEY_ID}
+        secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+        s3forcepathstyle: {{ loki_s3_force_path_style | bool | lower }}
+        insecure: {{ loki_s3_insecure | bool | lower }}
+
+  # Optional; keep only if you intend to use admin API features
+  storage:
+    type: s3
+    bucketNames:
+      chunks: {{ loki_bucket_chunks | quote }}
+      ruler: {{ loki_bucket_ruler | quote }}
+      admin: {{ loki_bucket_admin | quote }}
+    s3:
+      endpoint: {{ loki_s3_endpoint | regex_replace('^https?://', '') | quote }}
+      accessKeyId: ${AWS_ACCESS_KEY_ID}
+      secretAccessKey: ${AWS_SECRET_ACCESS_KEY}
+      s3ForcePathStyle: {{ loki_s3_force_path_style | bool | lower }}
+      insecure: {{ loki_s3_insecure | bool | lower }}
+      region: {{ loki_s3_region | quote }}
+
+  pattern_ingester:
+    enabled: true
+
+  limits_config:
+    allow_structured_metadata: true
+    volume_enabled: true
+
+  querier:
+    max_concurrent: 4
+
+  compactor:
+    working_directory: /var/loki/compactor
+
+global:
+  extraEnvFrom:
+    - secretRef:
+        name: {{ loki_s3_secret_name }}
+
+backend:
+  replicas: 1
+  persistence:
+    enabled: true
+    storageClass: {{ loki_storage_class_name | quote }}
+    size: 20Gi
+
+read:
+  replicas: 1
+
+write:
+  replicas: 1
+  persistence:
+    enabled: true
+    storageClass: {{ loki_storage_class_name | quote }}
+    size: 20Gi
+
+gateway:
+  enabled: true
+  replicas: 1
+
+chunksCache:
+  enabled: true
+
+resultsCache:
+  enabled: true
+
+minio:
+  enabled: false
+
+singleBinary:
+  replicas: 1
+
+ingester:
+  replicas: 1
+
+querier:
+  replicas: 1
+
+queryFrontend:
+  replicas: 1
+
+queryScheduler:
+  replicas: 1
+
+distributor:
+  replicas: 1
+
+compactor:
+  replicas: 1
+
+indexGateway:
+  replicas: 1

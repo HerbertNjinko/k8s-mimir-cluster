@@ -1,0 +1,18 @@
+controller:
+  ingressClassResource:
+    name: {{ ingress_nginx_class_name | quote }}
+    enabled: true
+    default: true
+
+  ingressClass: {{ ingress_nginx_class_name | quote }}
+
+  service:
+    type: NodePort
+    nodePorts:
+      http: {{ ingress_nginx_http_nodeport }}
+      https: {{ ingress_nginx_https_nodeport }}
+
+  watchIngressWithoutClass: true
+
+defaultBackend:
+  enabled: true

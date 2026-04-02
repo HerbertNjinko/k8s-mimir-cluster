@@ -1,0 +1,51 @@
+---
+- name: Preflight checks (no changes)
+  hosts: k8s
+  become: true
+  roles:
+    - { role: preflight, tags: ["preflight"] }
+
+- name: Common OS prep + container runtime + Kubernetes packages
+  hosts: k8s
+  become: true
+  roles:
+    - { role: common,     tags: ["common"] }
+    - { role: containerd, tags: ["containerd"] }
+    - { role: kubernetes, tags: ["kubernetes"] }
+
+- name: Initialize control plane + install CNI
+  hosts: controlplane
+  become: true
+  roles:
+    - { role: controlplane, tags: ["controlplane"] }
+    - { role: cni_calico,   tags: ["cni"] }
+
+- name: Join worker nodes
+  hosts: workers
+  become: true
+  roles:
+    - { role: workers, tags: ["workers"] }
+
+- name: Install local StorageClass provisioner
+  hosts: controlplane
+  become: true
+  roles:
+    - { role: local_storageclass, tags: ["storageclass"] }
+
+- name: Deploy Loki with Helm
+  hosts: controlplane
+  become: true
+  roles:
+    - { role: loki_deploy, tags: ["loki"] }
+
+- name: Deploy ingress-nginx
+  hosts: controlplane
+  become: true
+  roles:
+    - { role: ingress_nginx, tags: ["ingress-nginx"] }
+
+- name: Expose Loki gateway
+  hosts: controlplane
+  become: true
+  roles:
+    - { role: loki_ingress, tags: ["loki-ingress"] }

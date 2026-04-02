@@ -1,0 +1,52 @@
+---
+- name: Install repo tools
+  ansible.builtin.dnf:
+    name:
+      - dnf-plugins-core
+      - ca-certificates
+      - curl
+    state: present
+
+- name: Add Kubernetes pkgs.k8s.io repo
+  ansible.builtin.copy:
+    dest: /etc/yum.repos.d/kubernetes.repo
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [kubernetes]
+      name=Kubernetes
+      baseurl=https://pkgs.k8s.io/core:/stable:/{{ k8s_repo_version }}/rpm/
+      enabled=1
+      gpgcheck=1
+      gpgkey=https://pkgs.k8s.io/core:/stable:/{{ k8s_repo_version }}/rpm/repodata/repomd.xml.key
+      repo_gpgcheck=0
+      exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+
+- name: Refresh DNF metadata (makecache)
+  ansible.builtin.command: dnf -y makecache
+  changed_when: false
+
+# Preflight: prove the packages are visible before trying install
+- name: Check Kubernetes packages are available in repos
+  ansible.builtin.command: dnf -q list kubelet kubeadm kubectl --disableexcludes=kubernetes
+  register: k8s_pkg_list
+  changed_when: false
+  failed_when: k8s_pkg_list.rc != 0
+  when: not ansible_check_mode
+
+- name: Install kubelet kubeadm kubectl
+  ansible.builtin.dnf:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    disable_excludes: kubernetes
+
+- name: Enable kubelet (skip in check mode)
+  ansible.builtin.service:
+    name: kubelet
+    state: started
+    enabled: true
+  when: not ansible_check_mode

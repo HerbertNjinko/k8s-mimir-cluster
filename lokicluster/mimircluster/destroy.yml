@@ -1,0 +1,6 @@
+---
+- name: Destroy Kubernetes cluster and clean node state
+  hosts: k8s
+  become: true
+  roles:
+    - { role: destroy, tags: ["destroy"] }

@@ -1,0 +1,67 @@
+# Kubernetes version stream repo (stable v1.35)
+k8s_repo_version: "v1.35"
+calico_version: "v3.31.4"
+# Pod network CIDR to match Calico
+pod_network_cidr: "192.168.0.0/16"
+
+# API advertise address (your control-plane node IP)
+apiserver_advertise_address: "172.16.9.105"
+
+# /etc/hosts entries (simple on-prem name resolution)
+hosts_entries:
+  - { ip: "172.16.9.105", names: ["USP10LPGRAFKUB1", "mimir-control"] }
+  - { ip: "172.16.9.102", names: ["USP10LPGRAFMIM1", "mimir-worker1"] }
+  - { ip: "172.16.9.103", names: ["USP10LPGRAFMIM2", "mimir-worker2"] }
+  - { ip: "172.16.9.104", names: ["USP10LPGRAFMIM3", "mimir-worker3"] }
+
+# Optional: set this if you want kubectl config copied to a specific user on the control node
+# If empty, it uses the SSH user you connect as (ansible_user).
+kubectl_admin_user: ""
+
+# Mimir
+mimir_namespace: "mimir"
+mimir_release_name: "mimir-prod"
+mimir_chart_version: "6.0.3"
+
+# Calico / cluster sizing already defined elsewhere
+# pod_network_cidr: "192.168.0.0/16"
+
+# Mimir S3 secret name
+mimir_s3_secret_name: "mimir-s3-credentials"
+mimir_s3_secret_version: "1"
+
+# S3 object storage
+mimir_s3_endpoint: "s3.amazonaws.com"
+mimir_s3_region: "us-east-1"
+mimir_s3_bucket_blocks: "mimir_s3_blocks_bucket"
+mimir_s3_bucket_alertmanager: "mimir_s3_alertmanager_bucket"
+mimir_s3_bucket_ruler: "mimir_s3_ruler_bucket"
+mimir_storage_class_name: "local-path"
+
+# Provide actual credentials securely here (or via vault)
+mimir_s3_access_key_id: "{{ vault_mimir_s3_access_key_id }}"
+mimir_s3_secret_access_key: "{{ vault_mimir_s3_secret_access_key }}"
+
+# S3-compatible settings
+# Whether the S3 endpoint uses TLS certs that are not trusted (use false for prod)
+mimir_s3_insecure: false
+mimir_s3_force_path_style: false
+
+# used to trigger rolling restart if credentials are updated
+mimir_bucket_secret_version: "0"
+
+# Deployment model
+mimir_classic_architecture: true
+
+# Small production-ish footprint for a 4-node cluster
+mimir_alertmanager_replicas: 2
+mimir_compactor_replicas: 1
+mimir_distributor_replicas: 2
+mimir_ingester_replicas: 2
+mimir_querier_replicas: 2
+mimir_query_frontend_replicas: 2
+mimir_query_scheduler_replicas: 2
+mimir_ruler_replicas: 1
+mimir_store_gateway_replicas: 2
+mimir_gateway_replicas: 2
+

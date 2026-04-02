@@ -1,0 +1,181 @@
+---
+- name: Preflight | Show node identity
+  ansible.builtin.debug:
+    msg:
+      - "Host: {{ inventory_hostname }} ({{ ansible_host | default('no ansible_host') }})"
+      - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+      - "Kernel: {{ ansible_kernel }}"
+
+# --------------------------
+# Swap status
+# --------------------------
+- name: Preflight | Check swap (active)
+  ansible.builtin.command: swapon --show
+  register: swapon_out
+  changed_when: false
+  failed_when: false
+
+- name: Preflight | Fail if swap is enabled
+  ansible.builtin.fail:
+    msg: |
+      Swap is enabled on {{ inventory_hostname }}.
+      Output:
+      {{ swapon_out.stdout | default('(no output)') }}
+      Disable swap before kubeadm install (swapoff -a and comment fstab swap).
+  when: swapon_out.stdout is defined and (swapon_out.stdout | trim | length) > 0
+
+# --------------------------
+# Time sync status (chrony)
+# --------------------------
+- name: Preflight | Check chronyd service status
+  ansible.builtin.command: systemctl is-active chronyd
+  register: chrony_active
+  changed_when: false
+  failed_when: false
+
+- name: Preflight | Check chrony sources
+  ansible.builtin.command: chronyc sources -v
+  register: chrony_sources
+  changed_when: false
+  failed_when: false
+
+- name: Preflight | Warn if chronyd not active
+  ansible.builtin.debug:
+    msg: |
+      WARNING: chronyd is not active on {{ inventory_hostname }} (status={{ chrony_active.stdout | default('unknown') }}).
+      Time drift can break certs and cluster stability.
+  when: chrony_active.stdout is not defined or chrony_active.stdout != "active"
+
+- name: Preflight | Warn if chrony has no sources
+  ansible.builtin.debug:
+    msg: |
+      WARNING: chronyc sources returned no output on {{ inventory_hostname }}.
+      Output:
+      {{ chrony_sources.stdout | default('(no output)') }}
+  when: chrony_sources.stdout is not defined or (chrony_sources.stdout | trim | length) == 0
+
+# --------------------------
+# Repo reachability / proxy
+# --------------------------
+- name: Preflight | Show proxy environment (if any)
+  ansible.builtin.shell: |
+    echo "http_proxy=${http_proxy:-}"
+    echo "https_proxy=${https_proxy:-}"
+    echo "no_proxy=${no_proxy:-}"
+  register: proxy_env
+  changed_when: false
+
+- name: Preflight | Warn if expected proxy is set but not present
+  ansible.builtin.debug:
+    msg: |
+      WARNING: expected_proxy is set ({{ expected_proxy }}) but https_proxy/http_proxy not matching.
+      Current:
+      {{ proxy_env.stdout }}
+  when: expected_proxy | length > 0 and
+        (proxy_env.stdout is not search(expected_proxy))
+
+- name: Preflight | Check HTTPS reachability to repo endpoints
+  ansible.builtin.uri:
+    url: "{{ item }}"
+    method: HEAD
+    return_content: false
+    validate_certs: true
+    timeout: 10
+    status_code: [200, 301, 302, 403]
+  loop: "{{ repo_urls }}"
+  register: repo_uri_checks
+  failed_when: false
+  changed_when: false
+
+- name: Preflight | Fail if any repo endpoint unreachable
+  ansible.builtin.fail:
+    msg: |
+      Repo endpoint is unreachable from {{ inventory_hostname }}:
+      {{ item.item }} -> status={{ item.status | default('n/a') }}, msg={{ item.msg | default('') }}
+      Fix DNS/proxy/firewall, or use internal mirrors.
+  loop: "{{ repo_uri_checks.results }}"
+  when: item.failed is defined and item.failed
+
+- name: Preflight | DNF metadata refresh (non-destructive)
+  ansible.builtin.command: dnf -y makecache
+  register: dnf_makecache
+  changed_when: false
+  failed_when: dnf_makecache.rc != 0
+
+# --------------------------
+# DNS/hosts resolution across nodes
+# --------------------------
+- name: Preflight | Build list of names to test (inventory + provided hostnames)
+  ansible.builtin.set_fact:
+    names_to_test: >-
+      {{
+        (
+          (groups['k8s'] | default([]))
+          + (hosts_entries | default([]) | map(attribute='names') | list | flatten)
+          + (dns_test_names | default([]))
+        ) | unique
+      }}
+
+- name: Preflight | Resolve names (getent hosts)
+  ansible.builtin.command: "getent hosts {{ item }}"
+  loop: "{{ names_to_test }}"
+  register: getent_out
+  changed_when: false
+  failed_when: false
+
+- name: Preflight | Fail if any name does not resolve
+  ansible.builtin.fail:
+    msg: |
+      Name resolution failed on {{ inventory_hostname }} for: {{ item.item }}
+      getent output: {{ item.stdout | default('') }}
+      Fix DNS or /etc/hosts consistency.
+  loop: "{{ getent_out.results }}"
+  when: item.rc is defined and item.rc != 0
+
+# --------------------------
+# Port connectivity checks
+# --------------------------
+- name: Preflight | Determine control-plane IP
+  ansible.builtin.set_fact:
+    cp_ip: "{{ hostvars[controlplane_host].ansible_host | default(hostvars[controlplane_host].inventory_hostname) }}"
+
+- name: Preflight | Check ports from this node -> control-plane
+  ansible.builtin.wait_for:
+    host: "{{ cp_ip }}"
+    port: "{{ item.port }}"
+    timeout: 3
+    state: started
+  loop: "{{ controlplane_ports }}"
+  register: cp_port_checks
+  failed_when: false
+  changed_when: false
+
+- name: Preflight | Fail if any required port to control-plane is closed
+  ansible.builtin.fail:
+    msg: |
+      Port check FAILED from {{ inventory_hostname }} to control-plane ({{ cp_ip }}):
+      {{ item.item.name }} port {{ item.item.port }} is not reachable.
+      Fix firewalld/network ACLs/routing.
+  loop: "{{ cp_port_checks.results }}"
+  when: item.failed is defined and item.failed
+
+# Optional: node-to-node kubelet port checks (each host tries every other host)
+- name: Preflight | Check kubelet port between nodes (10250)
+  ansible.builtin.wait_for:
+    host: "{{ hostvars[item].ansible_host | default(item) }}"
+    port: 10250
+    timeout: 2
+    state: started
+  loop: "{{ groups['k8s'] | difference([inventory_hostname]) }}"
+  register: node_port_checks
+  failed_when: false
+  changed_when: false
+
+- name: Preflight | Warn if kubelet port not reachable between nodes (might be OK pre-install)
+  ansible.builtin.debug:
+    msg: |
+      NOTE: From {{ inventory_hostname }} -> {{ item.item }} port 10250 not reachable.
+      This is expected before kubelet is installed/started.
+      After kubelet install, ensure node-to-node traffic is allowed if you enforce firewalls.
+  loop: "{{ node_port_checks.results }}"
+  when: item.failed is defined and item.failed
